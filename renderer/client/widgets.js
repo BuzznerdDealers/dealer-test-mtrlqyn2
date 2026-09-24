@@ -50,6 +50,13 @@
   function mountMap(node, locations) {
     var target = node.querySelector('[data-bz-map]');
     if (!target || target.dataset.bzMounted) return;
+    // Already in the snapshot HTML — the canvas and first paint drew it. Any child
+    // counts, not just an iframe: the `static` provider renders tile images and
+    // replacing those with an embed would undo the reason it was chosen.
+    if (target.firstElementChild) {
+      target.dataset.bzMounted = '1';
+      return;
+    }
     var points = (locations || []).filter(function (l) {
       return l.latitude != null && l.longitude != null;
     });
@@ -129,6 +136,148 @@
     });
   }
 
+  function renderLocations(node, locations) {
+    var list = node.querySelector('ul.bz-loclist');
+    if (!list) {
+      list = el('ul', 'bz-loclist bz-bare');
+      var empty = node.querySelector('.bz-widget__empty');
+      if (empty) empty.replaceWith(list);
+      else node.appendChild(list);
+    }
+    if (!locations || !locations.length) return;
+    list.textContent = '';
+    locations.forEach(function (l) {
+      var li = el('li', 'bz-loc');
+      var name = l.name || l.city || '';
+      if (l.href) {
+        var title = el('a', 'bz-loc__c', name);
+        title.href = l.href;
+        title.setAttribute('data-bz-el', 'link');
+        title.setAttribute('data-bz-intent', 'find-location');
+        li.appendChild(title);
+      } else {
+        li.appendChild(el('span', 'bz-loc__c', name));
+      }
+      var locality = [l.city, [l.region, l.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+      var address = [l.streetAddress, locality].filter(Boolean).join(', ');
+      if (address) {
+        var addr = document.createElement('address');
+        addr.className = 'bz-loc__a';
+        addr.appendChild(text(address));
+        li.appendChild(addr);
+      }
+      if (l.phone) {
+        var tel = el('a', 'bz-loc__p', l.phone);
+        tel.href = 'tel:' + String(l.phone).replace(/[^+\d]/g, '');
+        tel.setAttribute('data-bz-el', 'phone');
+        tel.setAttribute('data-bz-intent', 'call-location');
+        li.appendChild(tel);
+      }
+      list.appendChild(li);
+    });
+  }
+
+  /**
+   * Staff refreshed in place.
+   *
+   * This widget fetched its data and discarded it until 4.14.0, because there
+   * was no branch here — so moving someone between rooftops changed nothing on
+   * the site until a human reopened the page in the editor and saved it.
+   */
+  function renderStaff(node, staff) {
+    var list = node.querySelector('ul.bz-people');
+    if (!list) {
+      list = el('ul', 'bz-people bz-bare');
+      var empty = node.querySelector('.bz-widget__empty');
+      if (empty) empty.replaceWith(list);
+      else node.appendChild(list);
+    }
+    if (!staff || !staff.length) return;
+    list.textContent = '';
+    staff.forEach(function (p) {
+      var li = el('li', 'bz-person');
+      var src = p.photo && typeof p.photo === 'object' ? p.photo.src : p.photo;
+      if (src) {
+        var img = document.createElement('img');
+        img.src = src;
+        img.alt = (p.photo && p.photo.alt) || '';
+        img.width = 128;
+        img.height = 128;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        li.appendChild(img);
+      } else {
+        var blank = el('div', 'bz-photo bz-photo--empty');
+        blank.setAttribute('aria-hidden', 'true');
+        li.appendChild(blank);
+      }
+      li.appendChild(el('span', 'bz-person__n', p.name));
+      if (p.title) li.appendChild(el('span', 'bz-person__t', p.title));
+      if (p.phone) {
+        var tel = el('a', 'bz-person__p', p.phone);
+        tel.href = 'tel:' + String(p.phone).replace(/[^+\d]/g, '');
+        tel.setAttribute('data-bz-el', 'phone');
+        tel.setAttribute('data-bz-intent', 'call-staff');
+        li.appendChild(tel);
+      }
+      list.appendChild(li);
+    });
+  }
+
+  function renderPhones(node, numbers) {
+    var list = node.querySelector('ul.bz-phones');
+    if (!list || !numbers || !numbers.length) return;
+    list.textContent = '';
+    numbers.forEach(function (n) {
+      var li = el('li', 'bz-phone');
+      li.appendChild(el('span', 'bz-phone__l', n.label));
+      var a = el('a', '', n.number);
+      a.href = 'tel:' + String(n.number).replace(/[^+\d]/g, '');
+      a.setAttribute('data-bz-el', 'phone');
+      a.setAttribute('data-bz-intent', 'call-department');
+      li.appendChild(a);
+      list.appendChild(li);
+    });
+  }
+
+  function renderHours(node, data) {
+    var schedules =
+      data && data.schedules && data.schedules.length
+        ? data.schedules
+        : data && data.hours && data.hours.length
+          ? [{ heading: null, hours: data.hours }]
+          : [];
+    if (!schedules.length) return;
+    var tables = node.querySelectorAll('table.bz-hours');
+    var host = tables[0] ? tables[0].parentNode : node;
+    Array.prototype.forEach.call(tables, function (t) {
+      t.parentNode.removeChild(t);
+    });
+    var empty = node.querySelector('.bz-widget__empty');
+    if (empty) empty.parentNode.removeChild(empty);
+    schedules.forEach(function (schedule) {
+      var table = document.createElement('table');
+      table.className = 'bz-hours';
+      var caption = document.createElement('caption');
+      caption.appendChild(text(schedule.heading || 'Opening hours'));
+      table.appendChild(caption);
+      var body = document.createElement('tbody');
+      (schedule.hours || []).forEach(function (row) {
+        var tr = document.createElement('tr');
+        var th = document.createElement('th');
+        th.scope = 'row';
+        th.appendChild(text(row.day));
+        var td = document.createElement('td');
+        td.appendChild(text(row.hours));
+        tr.appendChild(th);
+        tr.appendChild(td);
+        body.appendChild(tr);
+      });
+      table.appendChild(body);
+      host.appendChild(table);
+    });
+  }
+
   function hydrate(node) {
     var widget = node.getAttribute('data-bz-widget');
     var config = readConfig(node);
@@ -142,7 +291,13 @@
       .then(json)
       .then(function (data) {
         if (!data || data.error) return;
-        if (widget === 'locations-map') mountMap(node, data.locations);
+        if (widget === 'locations-map') {
+          renderLocations(node, data.locations);
+          mountMap(node, data.locations);
+        }
+        if (widget === 'phone-numbers') renderPhones(node, data.numbers);
+        if (widget === 'hours') renderHours(node, data);
+        if (widget === 'staff') renderStaff(node, data.staff);
         if (widget === 'inventory-carousel') renderListings(node, data.listings);
         node.setAttribute('data-bz-hydrated', '1');
       })
@@ -154,9 +309,34 @@
 
   /* --------------------------------------------------------------- forms */
 
+  /* The listing a `spec:` rule is judged against, read back from the form. Only
+   * a surface that knows the product emits it; a static brand-site page has no
+   * product and every `spec:` rule then evaluates against an empty string, which
+   * is the same answer the server gives for a submission with no product
+   * context. */
+  function specBag(form) {
+    if (form.__bzSpec) return form.__bzSpec;
+    var raw = form.getAttribute('data-bz-spec');
+    var parsed = {};
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw) || {};
+      } catch (e) {
+        parsed = {};
+      }
+    }
+    form.__bzSpec = parsed;
+    return parsed;
+  }
+
   function fieldValue(form, fieldId) {
+    if (fieldId && fieldId.indexOf('spec:') === 0) return specBag(form)[fieldId] || '';
     var wrap = form.querySelector('[data-bz-field="' + fieldId + '"]');
     if (!wrap) return '';
+    // A hidden field is the input, not a wrapper around one.
+    if (wrap.tagName === 'INPUT' || wrap.tagName === 'SELECT' || wrap.tagName === 'TEXTAREA') {
+      return wrap.value || '';
+    }
     var checked = wrap.querySelectorAll('input[type=checkbox]:checked, input[type=radio]:checked');
     if (checked.length) {
       return Array.prototype.map
@@ -165,6 +345,50 @@
     }
     var input = wrap.querySelector('input, select, textarea');
     return input ? input.value : '';
+  }
+
+  /* Where a hidden field's value is captured from. `static` carries its value in
+   * the markup and is absent here; everything else is a fact about the page the
+   * visitor arrived on, which a static build cannot know. */
+  var CAPTURE = {
+    query: function (form, param) { return param ? param_(param) : ''; },
+    referrer: function () { return document.referrer || ''; },
+    pageUrl: function () { return location.href; },
+    utmSource: function () { return param_('utm_source'); },
+    utmCampaign: function () { return param_('utm_campaign'); },
+    utmMedium: function () { return param_('utm_medium'); },
+    /* Filled so the dealer sees it on the submission. The server re-resolves it
+     * from the page's product context before anything treats it as a listing:
+     * a hidden input is a field, and a bot can rewrite one. */
+    productId: function (form) {
+      var raw = form.getAttribute('data-bz-vehicle');
+      if (!raw) return '';
+      try {
+        var vehicle = JSON.parse(raw) || {};
+        return String(vehicle.id || vehicle.productId || '');
+      } catch (e) {
+        return '';
+      }
+    },
+  };
+
+  function param_(name) {
+    try {
+      return new URLSearchParams(location.search).get(name) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /** Fill the hidden fields whose value comes from the page rather than the JSON. */
+  function captureHidden(form) {
+    var inputs = form.querySelectorAll('[data-bz-hidden-field][data-bz-source]');
+    Array.prototype.forEach.call(inputs, function (input) {
+      var capture = CAPTURE[input.getAttribute('data-bz-source')];
+      if (!capture) return;
+      var value = capture(form, input.getAttribute('data-bz-param'));
+      if (value) input.value = value;
+    });
   }
 
   var OPERATORS = {
@@ -208,6 +432,40 @@
     });
   }
 
+  function emit(name, detail) {
+    try {
+      document.dispatchEvent(new CustomEvent(name, { detail: detail }));
+    } catch (e) {
+      /* A browser without CustomEvent still submits the form. */
+    }
+  }
+
+  /* The consent checkbox is an explicit permission to contact, so a ticked box
+   * is `in-explicit`. A form with no consent control at all is `in-implicit`:
+   * the visitor asked to be contacted by filling it in, which is what that
+   * value means. An unticked box on a form that has one is `out`. */
+  function optInFor(form) {
+    var box = form.querySelector('input[name="consent"]');
+    if (!box) return 'in-implicit';
+    return box.checked ? 'in-explicit' : 'out';
+  }
+
+  /* Preferred contact method, when the form asked. Never inferred from which
+   * fields the visitor happened to fill in — a phone number is not a request
+   * to be phoned. */
+  function prefContactFor(data) {
+    var value = data.get('prefContact') || data.get('preferred_contact');
+    if (!value) return null;
+    value = String(value).toLowerCase();
+    return /phone|call/.test(value)
+      ? 'phone'
+      : /email/.test(value)
+        ? 'email'
+        : /text|sms/.test(value)
+          ? 'text'
+          : 'other';
+  }
+
   function submitForm(form) {
     var status = form.querySelector('.bz-form__status');
     var button = form.querySelector('button[type=submit]');
@@ -230,8 +488,31 @@
           form.setAttribute('data-state', 'sent');
           if (status) {
             status.setAttribute('data-state', 'ok');
-            status.textContent = form.getAttribute('data-bz-success') || 'Thanks — we will be in touch.';
+            /* The server's answer first: confirmations are ordered and
+             * first-match-wins, and only the server has the submitted values the
+             * conditional entries are judged against. The baked-in copy is the
+             * unconditional entry, which is what shows when the server has
+             * nothing more specific to say. */
+            status.textContent =
+              (res && res.message) ||
+              form.getAttribute('data-bz-success') ||
+              'Thanks — we will be in touch.';
           }
+          /* Announced rather than tracked here: this file knows the lead landed
+           * and what id it was given, and analytics.js knows how to report it.
+           * Keeping the two apart means a dealer without the analytics runtime
+           * still gets working forms. The event carries the server's leadId, so
+           * the tag reports a reference that matches a row. */
+          emit('bz:form:submitted', {
+            form: form,
+            leadId: (res && res.leadId) || null,
+            formOptIn: optInFor(form),
+            prefContact: prefContactFor(data),
+          });
+          /* Only after the lead is safely recorded, and only after the event is
+           * dispatched — navigating first would lose both. */
+          var redirect = (res && res.redirectUrl) || form.getAttribute('data-bz-redirect');
+          if (redirect) setTimeout(function () { location.assign(redirect); }, 150);
           return;
         }
         throw new Error((res && res.message) || 'Submission failed');
@@ -242,10 +523,12 @@
           status.setAttribute('data-state', 'error');
           status.textContent = err.message || 'Something went wrong. Please try again.';
         }
+        emit('bz:form:error', { form: form, message: err.message || 'Submission failed' });
       });
   }
 
   function bindForm(form) {
+    captureHidden(form);
     applyLogic(form);
     form.addEventListener('input', function () { applyLogic(form); });
     form.addEventListener('change', function () { applyLogic(form); });
@@ -387,7 +670,11 @@
     return REDUCED ? 'auto' : 'smooth';
   }
 
-  function emit(node, name, detail) {
+  // Not `emit`. That name is the form helper above, and a second function
+  // declaration in this scope replaces it — a successful submit then calls
+  // dispatchEvent on the event name string and the confirmation never shows.
+  function emitOn(node, name, detail) {
+    if (!node || typeof node.dispatchEvent !== 'function') return;
     node.dispatchEvent(new CustomEvent('bz:' + name, { bubbles: true, detail: detail || {} }));
   }
 
@@ -407,9 +694,18 @@
 
   function carousel(root) {
     var opts = behaviourOptions(root);
-    var track = part(root, 'track') || root;
-    var slides = parts(root, 'slide');
-    if (!slides.length) return;
+    var declaredTrack = part(root, 'track');
+    var track = declaredTrack || root;
+    // Read live rather than captured once. A rail whose items are a dealer's
+    // locations, listings or staff has them rebuilt by `hydrate` after this has
+    // already bound, and a captured list would leave the arrows measuring nodes
+    // that are no longer in the document.
+    function slides() {
+      return parts(root, 'slide');
+    }
+    // An empty rail with a declared track is a rail waiting for its data, not a
+    // mistake. Without a track there is nothing to watch, so nothing to wait for.
+    if (!slides().length && !declaredTrack) return;
 
     root.setAttribute('data-bz-carousel', '');
     track.setAttribute('data-bz-track', '');
@@ -425,11 +721,13 @@
     var perMove = Number(opts.perMove) > 0 ? Number(opts.perMove) : 1;
 
     function stride() {
-      if (slides.length > 1) {
-        var delta = Math.abs(slides[1].offsetLeft - slides[0].offsetLeft);
+      var items = slides();
+      if (!items.length) return 0;
+      if (items.length > 1) {
+        var delta = Math.abs(items[1].offsetLeft - items[0].offsetLeft);
         if (delta > 1) return delta;
       }
-      return slides[0].offsetWidth || track.clientWidth;
+      return items[0].offsetWidth || track.clientWidth;
     }
 
     function index() {
@@ -438,8 +736,15 @@
     }
 
     var dots = [];
-    if (dotsHost && !dotsHost.children.length) {
-      slides.forEach(function (slide, i) {
+
+    // Rebuilt whenever the slide count changes, because a dealer-data rail has no
+    // slides at all until its fetch lands.
+    function buildDots() {
+      if (!dotsHost) return;
+      var items = slides();
+      if (dots.length === items.length) return;
+      dotsHost.textContent = '';
+      dots = items.map(function (slide, i) {
         var dot = document.createElement('button');
         dot.type = 'button';
         dot.className = 'bz-dot';
@@ -449,13 +754,15 @@
           track.scrollTo({ left: slide.offsetLeft - track.offsetLeft, behavior: scrollMode() });
         });
         dotsHost.appendChild(dot);
-        dots.push(dot);
+        return dot;
       });
-    } else if (dotsHost) {
-      dots = parts(root, 'dot');
     }
 
+    if (dotsHost && dotsHost.children.length) dots = parts(root, 'dot');
+    else buildDots();
+
     function sync() {
+      buildDots();
       var current = index();
       var start = track.scrollLeft <= 2;
       var end = track.scrollLeft + track.clientWidth >= track.scrollWidth - 2;
@@ -495,6 +802,12 @@
       { passive: true },
     );
     window.addEventListener('resize', sync, { passive: true });
+    // `hydrate` replaces a dealer-data list wholesale once its fetch lands, which
+    // is after this has bound. Watching the track is what turns the arrows on at
+    // that moment instead of leaving them disabled against an empty rail.
+    if (declaredTrack && window.MutationObserver) {
+      new MutationObserver(sync).observe(track, { childList: true });
+    }
     sync();
   }
 
@@ -524,12 +837,30 @@
       return matchAny ? results.some(Boolean) : results.every(Boolean);
     }
 
+    // An item inside a `data-bz-reveal="dim"` subtree stays in the page when it
+    // does not match, and only reports whether it did. That is how one chip row
+    // drives two views of the same set: the cards below go away, and the pins on
+    // the map light up and dim without the map losing its shape.
+    var dimmed = items.map(function (item) {
+      var host = item.closest && item.closest('[data-bz-reveal]');
+      return !!host && host.getAttribute('data-bz-reveal') === 'dim';
+    });
+    // The count is a count of locations, not of elements that represent one. A
+    // dimmed pin is the same rooftop as the card below it, so counting both would
+    // say twelve. When everything is dimmed there is no second view and the
+    // dimmed items are the set.
+    var counted = dimmed.some(function (d) { return !d; })
+      ? function (i) { return !dimmed[i]; }
+      : function () { return true; };
+
     function apply() {
       var shown = 0;
-      items.forEach(function (item) {
+      items.forEach(function (item, i) {
         var visible = matches(item);
-        item.hidden = !visible;
-        if (visible) shown += 1;
+        if (dimmed[i]) item.removeAttribute('hidden');
+        else item.hidden = !visible;
+        item.setAttribute('data-bz-match', visible ? '1' : '0');
+        if (visible && counted(i)) shown += 1;
       });
       if (countHost) {
         var template = countHost.getAttribute('data-bz-count-template');
@@ -544,7 +875,7 @@
         control.setAttribute('aria-pressed', String(on));
         setFlag(control, 'data-bz-active', on);
       });
-      emit(root, 'filter', { state: state, shown: shown, total: items.length });
+      emitOn(root, 'filter', { state: state, shown: shown, total: items.length });
     }
 
     controls.forEach(function (control) {
@@ -812,7 +1143,7 @@
           child.disabled = kept.length <= 1 && !value;
           var stillThere = kept.some(function (option) { return option.value === previous; });
           child.value = stillThere ? previous : kept.length ? kept[0].value : '';
-          emit(child, 'dependentchange', { value: child.value });
+          emitOn(child, 'dependentchange', { value: child.value });
         });
     }
 
@@ -872,7 +1203,7 @@
     window.addEventListener('message', function (event) {
       if (event.origin !== origin || !event.data || typeof event.data !== 'object') return;
       if (event.data.type !== 'bz:select') return;
-      emit(root, 'mapselect', event.data);
+      emitOn(root, 'mapselect', event.data);
     });
   }
 

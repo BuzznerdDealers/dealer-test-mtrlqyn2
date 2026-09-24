@@ -1,5 +1,5 @@
 {
-  "rendererVersion": "4.10.0",
+  "rendererVersion": "4.24.0",
   "documentVersion": 2,
   "gridColumns": 12,
   "tokenGroups": {
@@ -124,6 +124,7 @@
     "page",
     "post",
     "inventory",
+    "location",
     "url",
     "label"
   ],
@@ -172,6 +173,13 @@
       "specificity": 350
     },
     {
+      "id": "allLocations",
+      "label": "Location pages",
+      "description": "Every page built from the one-page-per-location template. Generated slugs do not exist until a location does, so a specific-page condition cannot reach them.",
+      "ref": null,
+      "specificity": 300
+    },
+    {
       "id": "pageGroup",
       "label": "A group of pages",
       "description": "Every page tagged with one group.",
@@ -190,6 +198,13 @@
       "label": "A specific post",
       "description": "",
       "ref": "post",
+      "specificity": 500
+    },
+    {
+      "id": "location",
+      "label": "One location’s page",
+      "description": "The generated page for a single location, by its slug.",
+      "ref": "location",
       "specificity": 500
     }
   ],
@@ -289,6 +304,8 @@
   ],
   "staticWidgets": [
     "locations-map",
+    "locations-pinmap",
+    "location-photo",
     "staff",
     "faq",
     "phone-numbers",
@@ -320,6 +337,425 @@
     "select",
     "color",
     "list"
+  ],
+  "dataSources": [
+    {
+      "id": "locations",
+      "label": "Locations",
+      "description": "Every active rooftop, from Admin → Locations. Opening a branch adds a card to every list built on this.",
+      "widget": "locations-map",
+      "path": "locations",
+      "match": "slug",
+      "config": [
+        "locationSlug",
+        "excludeSlug",
+        "pagePathPrefix"
+      ],
+      "fields": [
+        {
+          "key": "id",
+          "type": "text",
+          "label": "Id"
+        },
+        {
+          "key": "name",
+          "type": "text",
+          "label": "Name"
+        },
+        {
+          "key": "subtitle",
+          "type": "text",
+          "label": "Trading name"
+        },
+        {
+          "key": "slug",
+          "type": "text",
+          "label": "Slug"
+        },
+        {
+          "key": "href",
+          "type": "url",
+          "label": "Page link"
+        },
+        {
+          "key": "streetAddress",
+          "type": "text",
+          "label": "Street address"
+        },
+        {
+          "key": "city",
+          "type": "text",
+          "label": "City"
+        },
+        {
+          "key": "region",
+          "type": "text",
+          "label": "State / region"
+        },
+        {
+          "key": "postalCode",
+          "type": "text",
+          "label": "Postal code"
+        },
+        {
+          "key": "country",
+          "type": "text",
+          "label": "Country"
+        },
+        {
+          "key": "latitude",
+          "type": "number",
+          "label": "Latitude"
+        },
+        {
+          "key": "longitude",
+          "type": "number",
+          "label": "Longitude"
+        },
+        {
+          "key": "phone",
+          "type": "text",
+          "label": "Phone"
+        },
+        {
+          "key": "phoneUrl",
+          "type": "url",
+          "label": "Phone link"
+        },
+        {
+          "key": "email",
+          "type": "text",
+          "label": "Email"
+        },
+        {
+          "key": "mapUrl",
+          "type": "url",
+          "label": "Directions link"
+        },
+        {
+          "key": "num",
+          "type": "text",
+          "label": "Position in the list"
+        },
+        {
+          "key": "brands",
+          "type": "text",
+          "label": "Brands carried"
+        },
+        {
+          "key": "services",
+          "type": "text",
+          "label": "Services offered"
+        },
+        {
+          "key": "perks",
+          "type": "text",
+          "label": "Service options"
+        },
+        {
+          "key": "brandKeys",
+          "type": "text",
+          "label": "Brand keys (for filtering)"
+        },
+        {
+          "key": "perkKeys",
+          "type": "text",
+          "label": "Service option keys (for filtering)"
+        },
+        {
+          "key": "perk1",
+          "type": "text",
+          "label": "First service option"
+        },
+        {
+          "key": "perk2",
+          "type": "text",
+          "label": "Second service option"
+        },
+        {
+          "key": "perk3",
+          "type": "text",
+          "label": "Third service option"
+        },
+        {
+          "key": "departments",
+          "type": "text",
+          "label": "Departments"
+        },
+        {
+          "key": "hours",
+          "type": "text",
+          "label": "Opening hours"
+        },
+        {
+          "key": "phone2",
+          "type": "text",
+          "label": "Second phone"
+        },
+        {
+          "key": "phone2Url",
+          "type": "url",
+          "label": "Second phone link"
+        },
+        {
+          "key": "phone3",
+          "type": "text",
+          "label": "Third phone"
+        },
+        {
+          "key": "phone3Url",
+          "type": "url",
+          "label": "Third phone link"
+        },
+        {
+          "key": "group",
+          "type": "text",
+          "label": "Group"
+        },
+        {
+          "key": "groupKey",
+          "type": "text",
+          "label": "Group key (for filtering)"
+        },
+        {
+          "key": "photo",
+          "type": "image",
+          "label": "Photo"
+        },
+        {
+          "key": "banner",
+          "type": "image",
+          "label": "Page banner"
+        },
+        {
+          "key": "brandRows",
+          "type": "list",
+          "label": "Brands (one row each)",
+          "fields": [
+            {
+              "key": "name",
+              "type": "text",
+              "label": "Name"
+            },
+            {
+              "key": "key",
+              "type": "text",
+              "label": "Filter value"
+            }
+          ]
+        },
+        {
+          "key": "serviceRows",
+          "type": "list",
+          "label": "Services (one row each)",
+          "fields": [
+            {
+              "key": "name",
+              "type": "text",
+              "label": "Name"
+            },
+            {
+              "key": "description",
+              "type": "text",
+              "label": "Description"
+            }
+          ]
+        },
+        {
+          "key": "perkRows",
+          "type": "list",
+          "label": "Service options (one row each)",
+          "fields": [
+            {
+              "key": "label",
+              "type": "text",
+              "label": "Label"
+            },
+            {
+              "key": "key",
+              "type": "text",
+              "label": "Filter value"
+            }
+          ]
+        },
+        {
+          "key": "departmentRows",
+          "type": "list",
+          "label": "Departments (one row each)",
+          "fields": [
+            {
+              "key": "name",
+              "type": "text",
+              "label": "Name"
+            },
+            {
+              "key": "key",
+              "type": "text",
+              "label": "Code"
+            },
+            {
+              "key": "phone",
+              "type": "text",
+              "label": "Phone"
+            },
+            {
+              "key": "phoneUrl",
+              "type": "url",
+              "label": "Phone link"
+            },
+            {
+              "key": "email",
+              "type": "text",
+              "label": "Email"
+            },
+            {
+              "key": "hours",
+              "type": "text",
+              "label": "Hours, summarised"
+            }
+          ]
+        },
+        {
+          "key": "hoursRows",
+          "type": "list",
+          "label": "Opening hours, by department",
+          "fields": [
+            {
+              "key": "department",
+              "type": "text",
+              "label": "Department"
+            },
+            {
+              "key": "key",
+              "type": "text",
+              "label": "Code"
+            },
+            {
+              "key": "summary",
+              "type": "text",
+              "label": "Whole week, in one line"
+            },
+            {
+              "key": "days",
+              "type": "list",
+              "label": "Days",
+              "fields": [
+                {
+                  "key": "day",
+                  "type": "text",
+                  "label": "Day"
+                },
+                {
+                  "key": "hours",
+                  "type": "text",
+                  "label": "Open–close, or Closed"
+                },
+                {
+                  "key": "opensAt",
+                  "type": "text",
+                  "label": "Opens at"
+                },
+                {
+                  "key": "closesAt",
+                  "type": "text",
+                  "label": "Closes at"
+                },
+                {
+                  "key": "closed",
+                  "type": "boolean",
+                  "label": "Closed that day"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "location-brands",
+      "label": "Brands carried (filter options)",
+      "description": "One row per brand at least one rooftop carries, from Admin → Locations → Brands.",
+      "widget": "locations-map",
+      "path": "brandFacets",
+      "match": "value",
+      "config": [
+        "locationSlug"
+      ],
+      "fields": [
+        {
+          "key": "label",
+          "type": "text",
+          "label": "Label"
+        },
+        {
+          "key": "value",
+          "type": "text",
+          "label": "Filter value"
+        }
+      ]
+    },
+    {
+      "id": "location-service-options",
+      "label": "Service options (filter options)",
+      "description": "One row per service option at least one rooftop offers, from Admin → Locations → Profile.",
+      "widget": "locations-map",
+      "path": "perkFacets",
+      "match": "value",
+      "config": [
+        "locationSlug"
+      ],
+      "fields": [
+        {
+          "key": "label",
+          "type": "text",
+          "label": "Label"
+        },
+        {
+          "key": "value",
+          "type": "text",
+          "label": "Filter value"
+        }
+      ]
+    },
+    {
+      "id": "staff",
+      "label": "Staff",
+      "description": "Sales and service contacts, from the team directory.",
+      "widget": "staff",
+      "path": "staff",
+      "match": "name",
+      "config": [
+        "locationSlug",
+        "departmentCode"
+      ],
+      "fields": [
+        {
+          "key": "name",
+          "type": "text",
+          "label": "Name"
+        },
+        {
+          "key": "title",
+          "type": "text",
+          "label": "Title"
+        },
+        {
+          "key": "phone",
+          "type": "text",
+          "label": "Phone"
+        },
+        {
+          "key": "phoneUrl",
+          "type": "url",
+          "label": "Phone link"
+        },
+        {
+          "key": "photo",
+          "type": "image",
+          "label": "Photo"
+        }
+      ]
+    }
   ],
   "styleBuckets": [
     "base",
@@ -1130,6 +1566,23 @@
             ],
             "default": "none"
           },
+          "backgroundVideo": {
+            "type": "object",
+            "description": "A muted, looping clip behind this section's content — the hero-with-video pattern. An uploaded file only: an embed cannot be a background, because a third-party iframe brings its own chrome and swallows every click. Give it a `background` as well, so the section still reads before the clip has loaded and when a visitor has asked for reduced motion.",
+            "properties": {
+              "src": {
+                "type": "string",
+                "description": "Public video URL from the media library (mp4/webm)."
+              },
+              "poster": {
+                "type": "string",
+                "description": "The frame shown before the clip loads, when motion is reduced, and on the editing canvas. Effectively required: without it the band is empty in all three."
+              }
+            },
+            "required": [
+              "src"
+            ]
+          },
           "paddingY": {
             "type": "integer",
             "description": "Vertical padding, on the spacing scale.",
@@ -1373,6 +1826,14 @@
           "values": {
             "type": "object",
             "description": "Content for this placement, keyed by the component's declared prop keys. Anything left out falls back to the prop's default, so a placement need only state what differs."
+          },
+          "snapshots": {
+            "type": "object",
+            "description": "Widget data resolved by the platform for this placement, keyed by the widget node's id inside the component. Never hand-written."
+          },
+          "data": {
+            "type": "object",
+            "description": "Rows resolved by the platform for each list prop this placement pointed at a data source, keyed by the prop key. Never hand-written."
           }
         },
         "required": [
@@ -1581,6 +2042,67 @@
       }
     },
     {
+      "id": "video",
+      "label": "Video",
+      "category": "basic",
+      "group": "basic",
+      "autoTagged": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "video": {
+            "type": "object",
+            "description": "A video: either a file uploaded to the media library (mp4/webm), or a YouTube or Vimeo link. Anything that is not a recognised YouTube or Vimeo URL is treated as a file.",
+            "properties": {
+              "src": {
+                "type": "string",
+                "description": "Public video URL from the media library, or a YouTube/Vimeo page URL."
+              },
+              "poster": {
+                "type": "string",
+                "description": "Image shown before playback starts. Strongly recommended for an uploaded file: without it the block is a black rectangle until the visitor presses play, and the editing canvas has nothing to show at all. Ignored by YouTube and Vimeo, which bring their own."
+              },
+              "title": {
+                "type": "string",
+                "description": "Accessible title, read by screen readers and shown if the video cannot load."
+              }
+            },
+            "required": [
+              "src"
+            ]
+          },
+          "caption": {
+            "type": "string",
+            "description": "Optional caption shown under the video."
+          },
+          "width": {
+            "type": "string",
+            "description": "How wide the video sits.",
+            "enum": [
+              "prose",
+              "full"
+            ],
+            "default": "full"
+          },
+          "autoplay": {
+            "type": "boolean",
+            "description": "Start on load. Forces the clip muted, because no browser autoplays audio. Pair with `controls` off and `loop` on for an ambient clip."
+          },
+          "loop": {
+            "type": "boolean",
+            "description": "Restart when it ends."
+          },
+          "controls": {
+            "type": "boolean",
+            "description": "Show the player controls. On unless turned off."
+          }
+        },
+        "required": [
+          "video"
+        ]
+      }
+    },
+    {
       "id": "buttons",
       "label": "Buttons",
       "category": "basic",
@@ -1761,6 +2283,10 @@
           "config": {
             "type": "object",
             "description": "Widget props, validated against that widget's own schema."
+          },
+          "snapshot": {
+            "type": "object",
+            "description": "Data resolved by the platform and committed into the page, so the facts are in the static HTML. Never hand-written."
           }
         },
         "required": [

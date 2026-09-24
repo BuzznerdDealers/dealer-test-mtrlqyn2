@@ -28,19 +28,30 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isValidPageType, pageTypeOptions } from '../renderer/analytics-vocab.mjs';
 import {
   CONDITION_TYPES,
+  DATA_SOURCES,
   MENU_ITEM_TYPES,
   RENDERER_VERSION,
+  SLUG_TOKEN,
+  SPEC_SOURCES,
+  VALUE_SOURCES,
   allWidgetIds,
   blockCatalogue,
+  dataSource,
+  isDataBinding,
+  isLocationPage,
   listMenus,
+  locationIndex,
+  parseComponentProps,
   parseMenus,
   parseTemplate,
   parseWidgetDefinition,
   registerCustomWidgets,
   validateDocument,
   validateTemplate,
+  walkNodes,
 } from '../renderer/index.mjs';
 
 const HERE = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,6 +82,28 @@ const readJson = (path) => {
 const rel = (path) => relative(ROOT, path);
 const listJson = (dir) =>
   existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : [];
+
+/* The closed vocabularies this repo must author against.
+ *
+ * Baked into `platform/analytics.json` at publish, alongside the providers
+ * themselves, from whichever ones the dealer enabled. It lives with them rather
+ * than in `renderer/` for two reasons: `renderer/` is overwritten wholesale by
+ * the platform-file sync, which would delete a per-dealer file on the next
+ * publish; and the vocabularies are a fact about this dealer's providers, so
+ * they belong in the same file, written by the same bake, as the providers.
+ *
+ * Absent is the normal case and means nothing is constrained — not that
+ * validation is degraded. A dealer with no providers, or whose providers take
+ * free text, authors any page kind they like. A malformed file is treated the
+ * same as an absent one: refusing to validate a whole repo because a generated
+ * file is broken would block a dealer from fixing something they cannot edit. */
+const analyticsVocab = (() => {
+  const path = join(ROOT, 'platform', 'analytics.json');
+  if (!existsSync(path)) return null;
+  const { value } = readJson(path);
+  const vocab = value?.vocabularies;
+  return vocab && typeof vocab === 'object' ? vocab : null;
+})();
 
 /* ------------------------------------------------------- custom widgets first */
 // Registered before any document is validated: a page placing this site's own
@@ -128,6 +161,148 @@ for (const file of listJson(join(SITE, 'forms'))) {
     if (!field?.id) fail(rel(path), `fields[${i}].id`, 'every field needs a stable id');
     if (!field?.type) fail(rel(path), `fields[${i}].type`, 'every field needs a type');
   }
+  checkFormRouting(rel(path), value);
+}
+
+/* ------------------------------------------------------- routing and replies */
+
+/**
+ * Notifications and confirmations: who hears about a submission, and what the
+ * visitor sees next.
+ *
+ * Both lists are ordered and first-match-wins, which is the rule most easily
+ * lost when a list is edited — an unconditional entry above a conditional one
+ * makes everything below it dead, and nothing about the JSON says so. That is a
+ * note rather than a failure because it builds and routes; it just does not do
+ * what whoever wrote the lower entry meant.
+ */
+function checkFormRouting(file, form) {
+  const fieldIds = new Set((form?.fields ?? []).map((f) => f?.id).filter(Boolean));
+  const specIds = new Set(SPEC_SOURCES.map((s) => s.id));
+
+  for (const [i, field] of (form?.fields ?? []).entries()) {
+    if (!field?.hidden) continue;
+    const source = field.valueSource ?? 'static';
+    if (!VALUE_SOURCES.includes(source)) {
+      fail(
+        file,
+        `fields[${i}].valueSource`,
+        `"${source}" is not a value source`,
+        `Use one of: ${VALUE_SOURCES.join(', ')}.`,
+      );
+    }
+    if (source === 'query' && !String(field.queryParam ?? '').trim()) {
+      fail(
+        file,
+        `fields[${i}].queryParam`,
+        'a hidden field reading a URL parameter has to say which one',
+        'Set queryParam to the parameter name, e.g. "promo" for ?promo=spring.',
+      );
+    }
+    if (field.required) {
+      note(
+        file,
+        `hidden field "${field.id}" is marked required, which nothing enforces — a field the ` +
+          'visitor cannot see is never part of the validation gate. Drop required, or show the field.',
+      );
+    }
+  }
+
+  const ruleSources = (where, rules) => {
+    for (const [j, rule] of (rules ?? []).entries()) {
+      const id = rule?.fieldId;
+      if (!id) {
+        fail(file, `${where}.rules[${j}].fieldId`, 'a rule has to name a field');
+        continue;
+      }
+      if (fieldIds.has(id)) continue;
+      if (specIds.has(id)) {
+        if (!form?.pdpContext) {
+          fail(
+            file,
+            `${where}.rules[${j}].fieldId`,
+            `"${id}" is a product-page source, and this form is not marked for product pages`,
+            'Set pdpContext to true, or route on one of the form\'s own fields.',
+          );
+        }
+        continue;
+      }
+      fail(file, `${where}.rules[${j}].fieldId`, `no field called "${id}" on this form`);
+    }
+  };
+
+  /** Everything above `i` that would swallow it first. */
+  const deadBelow = (list, i) =>
+    list.slice(0, i).some((entry) => !(entry?.rules ?? []).length);
+
+  const notifications = form?.notifications ?? [];
+  for (const [i, n] of notifications.entries()) {
+    const where = `notifications[${i}]`;
+    ruleSources(where, n?.rules);
+    const target = n?.targetType ?? 'role';
+    if (!['role', 'user', 'email'].includes(target)) {
+      fail(file, `${where}.targetType`, `"${target}" is not a target type`, 'Use role, user or email.');
+    }
+    if (target === 'role' && !String(n?.roleId ?? '').trim()) {
+      fail(file, `${where}.roleId`, 'a role notification has to name a role');
+    }
+    if (target === 'user' && !String(n?.administratorId ?? '').trim()) {
+      fail(file, `${where}.administratorId`, 'a person notification has to name one');
+    }
+    if (target === 'email' && !String(n?.email ?? '').trim()) {
+      fail(file, `${where}.email`, 'an external notification has to carry an address');
+    }
+    if (target === 'role' && n?.scopeMode === 'fixed') {
+      if (!['location', 'group', 'organisation'].includes(n?.scopeType)) {
+        fail(
+          file,
+          `${where}.scopeType`,
+          'a fixed scope has to say which kind',
+          'Use location, group or organisation — or scopeMode "dynamic" to follow the lead.',
+        );
+      } else if (n.scopeType !== 'organisation' && !String(n?.scopeId ?? '').trim()) {
+        fail(file, `${where}.scopeId`, `a fixed ${n.scopeType} scope has to name one`);
+      }
+    }
+    if (deadBelow(notifications, i)) {
+      note(
+        file,
+        `notification "${n?.name ?? n?.id ?? i}" can never fire: an unconditional notification ` +
+          'above it already matches everything, and the first match wins. Move it up, or give the ' +
+          'one above it conditions.',
+      );
+    }
+  }
+  if ((form?.status ?? 'live') === 'live' && !notifications.length) {
+    note(
+      file,
+      'a live form with no notifications stores the submission and tells nobody. Add one, or the ' +
+        'lead sits on the Leads screen until somebody thinks to look.',
+    );
+  }
+
+  const confirmations = form?.confirmations ?? [];
+  for (const [i, c] of confirmations.entries()) {
+    const where = `confirmations[${i}]`;
+    ruleSources(where, c?.rules);
+    const type = c?.type ?? 'message';
+    if (!['message', 'redirect'].includes(type)) {
+      fail(file, `${where}.type`, `"${type}" is not a confirmation type`, 'Use message or redirect.');
+    }
+    if (type === 'message' && !String(c?.message ?? '').trim()) {
+      fail(file, `${where}.message`, 'a confirmation that shows a message needs one');
+    }
+    if (type === 'redirect' && !String(c?.redirectUrl ?? '').trim()) {
+      fail(file, `${where}.redirectUrl`, 'a confirmation that redirects needs somewhere to go');
+    }
+    if (deadBelow(confirmations, i)) {
+      note(
+        file,
+        `confirmation "${c?.name ?? c?.id ?? i}" can never show: an unconditional confirmation ` +
+          'above it already matches everything, and the first match wins.',
+      );
+    }
+  }
 }
 
 const buttons = new Set();
@@ -180,6 +355,29 @@ if (!existsSync(pagesPath)) {
           if (paths.has(page.path)) fail('site/pages.json', `${at}.path`, `"${page.path}" appears twice`);
           paths.add(page.path);
         }
+        // One authored page standing for many. Its `path` is a pattern and its
+        // `out` is derived per location, so the fixed-path rules below cannot
+        // apply — and the two ways of getting it wrong are both silent: a path
+        // with no :slug writes every location over the same file, and a page
+        // nobody has published yet emits nothing at all.
+        if (isLocationPage(page)) {
+          if (page?.path && !page.path.includes(SLUG_TOKEN)) {
+            fail(
+              'site/pages.json',
+              `${at}.path`,
+              `builds one page per location but has no "${SLUG_TOKEN}" in "${page.path}", so every location would overwrite the same file`,
+              `Use a path like "/locations/${SLUG_TOKEN}".`,
+            );
+          }
+          const doc = readJson(join(SITE, 'pages', page.dir ?? '', 'page.json')).value;
+          if (!locationIndex(doc).length) {
+            note(
+              'site/pages.json',
+              `"${page.slug}" builds one page per location and has no locations baked into it yet, so it emits nothing. Publishing writes them in.`,
+            );
+          }
+          continue;
+        }
         // `path` is the address a visitor types; `out` is the file written for it.
         // They are separate fields and nothing else checks that they agree, so a
         // page can be listed at /financing and written to about/index.html.
@@ -195,6 +393,47 @@ if (!existsSync(pagesPath)) {
             );
           }
         }
+        // Optional, and a plain list of strings. Worth checking only because a
+        // string typed here instead of an array renders as one keyword made of
+        // every character, which nothing else reports.
+        if (page?.seo?.keywords !== undefined) {
+          if (!Array.isArray(page.seo.keywords)) {
+            fail(
+              'site/pages.json',
+              `${at}.seo.keywords`,
+              'must be an array of strings',
+              'Write ["used trucks", "tampa"], not a comma-separated string.',
+            );
+          } else if (page.seo.keywords.some((k) => typeof k !== 'string')) {
+            fail('site/pages.json', `${at}.seo.keywords`, 'must contain only strings');
+          }
+        }
+        // Checked against the vocabulary the platform baked for whichever
+        // providers this dealer enabled, and unconstrained when there is none —
+        // a dealer in no programme authors whatever word describes the page.
+        //
+        // Optional either way, and a note rather than a failure when absent.
+        // Every existing dealer repo predates the field, and
+        // `syncPlatformFiles()` reaches those repos on publish rather than on a
+        // schedule — a repo at renderer 4.7.0 against 4.9.0 is the live proof
+        // that they drift. Making absence a failure today would break the next
+        // save in every unsynced repo.
+        if (page?.pageType !== undefined && !isValidPageType(page.pageType, analyticsVocab)) {
+          const allowed = pageTypeOptions(analyticsVocab);
+          fail(
+            'site/pages.json',
+            `${at}.pageType`,
+            `"${page.pageType}" is not a page kind any enabled analytics provider accepts`,
+            `Values are case sensitive. One of: ${allowed.join(', ')}.`,
+          );
+        } else if (page?.pageType === undefined) {
+          note(
+            'site/pages.json',
+            `"${page?.slug ?? at}" has no pageType, so analytics cannot tell what kind ` +
+              'of page it is. Set one in Pages → page settings.',
+          );
+        }
+
         if (page?.dir) pages.push(page);
       }
     }
@@ -203,15 +442,32 @@ if (!existsSync(pagesPath)) {
 
 const CONDITION_IDS = CONDITION_TYPES.map(c => c.id);
 const pageSlugs = new Set(pages.map(p => p.slug));
+/** The Admin location slugs publish has baked into this repo, if any. */
+const bakedLocationSlugs = new Set(
+  pages
+    .filter(isLocationPage)
+    .flatMap(p => locationIndex(readJson(join(SITE, 'pages', p.dir ?? '', 'page.json')).value))
+    .map(l => l.slug),
+);
 let sitewideTemplate = false;
 
 /* Component ids have to exist before pages and templates are checked — a
    `sharedSection` on a page names one of these, and `checkReferences` reads
    the set. Validation of the component files themselves still happens later. */
 const sectionIds = new Set();
+/* Their trees too: a rooftop page usually places its locations and hours widgets
+   through a component, so "does this page show location X" cannot be answered
+   from the page alone. */
+const sectionNodes = new Map();
+/* And their declared props, because a placement may point a list prop at a live
+   data source and only the declaration says which props are lists. */
+const sectionProps = new Map();
 for (const file of listJson(join(SITE, 'sections'))) {
   const { value } = readJson(join(SITE, 'sections', file));
-  sectionIds.add(value?.id ?? file.replace(/\.json$/, ''));
+  const id = value?.id ?? file.replace(/\.json$/, '');
+  sectionIds.add(id);
+  sectionNodes.set(id, value?.nodes ?? []);
+  sectionProps.set(id, parseComponentProps(value?.props));
 }
 
 /* ----------------------------------------------------------- page documents */
@@ -267,6 +523,7 @@ for (const file of listJson(join(SITE, 'templates'))) {
   for (const issue of errors) fail(rel(path), issue.path, issue.message);
   for (const issue of warnings) note(rel(path), `${issue.path}: ${issue.message}`);
   reportUnknownTypes(rel(path), parsed.nodes);
+  reportHandTaggedMarkup(rel(path), parsed.nodes);
   checkReferences(rel(path), parsed.nodes);
   reportStackedSiblings(rel(path), parsed.nodes);
   reportRepeatedShapes(rel(path), parsed.nodes);
@@ -302,6 +559,7 @@ for (const page of pages) {
   for (const issue of errors) fail(rel(path), issue.path, issue.message);
   for (const issue of warnings) note(rel(path), `${issue.path}: ${issue.message}`);
   reportUnknownTypes(rel(path), value?.nodes ?? []);
+  reportHandTaggedMarkup(rel(path), value?.nodes ?? []);
   checkReferences(rel(path), value?.nodes ?? []);
   reportStackedSiblings(rel(path), value?.nodes ?? []);
   reportRepeatedShapes(rel(path), value?.nodes ?? []);
@@ -312,6 +570,67 @@ for (const page of pages) {
       fail('site/pages.json', `${page.slug}.templates.${slot}`, `no template called "${id}"`);
     }
   }
+
+  reportRooftop(page, value?.nodes ?? []);
+}
+
+/**
+ * A rooftop page's structured data is built from its own widget snapshots, so a
+ * page that claims to be a location without carrying that location's data emits
+ * nothing — silently, and only in production, which is the worst combination.
+ */
+function reportRooftop(page, nodes) {
+  const slug = page.locationSlug;
+  if (!slug) {
+    if (/^\/locations\/[^/]+$/.test(page.path || '')) {
+      note(
+        'site/pages.json',
+        `"${page.slug}" looks like a rooftop page but has no locationSlug, so it emits the ` +
+          'company address rather than this branch\'s. Set it to the slug in Admin → Locations.',
+      );
+    }
+    return;
+  }
+  if (!placesWidget(nodes, 'locations-map', slug)) {
+    fail(
+      'site/pages.json',
+      `${page.slug}.locationSlug`,
+      `the page declares location "${slug}" but places no locations widget for it, so ` +
+        'there is nothing to build its address from',
+      'Add a "locations-map" widget with the same locationSlug — directly, or through a ' +
+        'component whose locationSlug value matches — then publish.',
+    );
+  } else if (!placesWidget(nodes, 'hours', slug)) {
+    note(
+      `site/pages/${page.dir}/page.json`,
+      `rooftop page "${slug}" has no hours widget for it, so its structured data carries ` +
+        'an address but no opening hours.',
+    );
+  }
+}
+
+/**
+ * Is this widget placed for this rooftop — directly, or inside a component whose
+ * `locationSlug` value matches? A component's own widgets read `{{locationSlug}}`,
+ * so the placement is the only place the real slug appears.
+ */
+function placesWidget(nodes, id, slug) {
+  let found = false;
+  walkNodes({ nodes }, node => {
+    if (node.type === 'widget' && node.props?.widget === id) {
+      const configured = node.props?.config?.locationSlug;
+      if (!configured || configured === slug) found = true;
+    }
+    if (node.type === 'sharedSection' && node.props?.values?.locationSlug === slug) {
+      const section = sectionNodes.get(node.props.sectionId);
+      if (section) {
+        walkNodes({ nodes: section }, inner => {
+          if (inner.type === 'widget' && inner.props?.widget === id) found = true;
+        });
+      }
+    }
+  });
+  return found;
 }
 
 /* ---------------------------------------------------- sections (components) */
@@ -332,6 +651,7 @@ for (const file of listJson(join(SITE, 'sections'))) {
   for (const issue of errors) fail(rel(path), issue.path, issue.message);
   for (const issue of warnings) note(rel(path), `${issue.path}: ${issue.message}`);
   reportUnknownTypes(rel(path), value?.nodes ?? []);
+  reportHandTaggedMarkup(rel(path), value?.nodes ?? []);
   checkReferences(rel(path), value?.nodes ?? []);
   reportStackedSiblings(rel(path), value?.nodes ?? []);
   reportRepeatedShapes(rel(path), value?.nodes ?? []);
@@ -354,6 +674,7 @@ for (const file of listJson(join(SITE, 'blog', 'posts'))) {
     const { errors } = validateDocument(value);
     for (const issue of errors) fail(rel(path), issue.path, issue.message);
     reportUnknownTypes(rel(path), value.nodes ?? value.blocks ?? []);
+    reportHandTaggedMarkup(rel(path), value.nodes ?? value.blocks ?? []);
   }
 }
 
@@ -387,6 +708,16 @@ if (existsSync(menusPath)) {
           if (!item?.label) fail('site/menus.json', at, 'every item needs a label');
           if (item?.type && !MENU_ITEM_TYPES.includes(item.type)) {
             fail('site/menus.json', `${at}.type`, `"${item.type}" is not one of ${MENU_ITEM_TYPES.join(', ')}`);
+          }
+          // A location item's `ref` is an Admin slug, and which slugs exist is a
+          // fact about the dealer's account rather than about this repo. Warned,
+          // never failed: a repo that has not been published yet knows of none,
+          // and refusing to validate it would make the feature unusable offline.
+          if (item?.type === 'location' && item.ref && !bakedLocationSlugs.has(item.ref)) {
+            note(
+              'site/menus.json',
+              `${at}.ref points at location "${item.ref}", which is not in the locations baked into this repo. It will resolve once that location is published, and link nowhere until then.`,
+            );
           }
           if (item?.type === 'page' && item.ref && !pageSlugs.has(item.ref)) {
             fail('site/menus.json', `${at}.ref`, `no page with slug "${item.ref}"`, 'Menu items point at a page by slug, not by address.');
@@ -459,6 +790,73 @@ if (existsSync(configPath)) {
   }
 }
 
+/**
+ * `site/redirects.json` — where a page's old address goes after a rename.
+ *
+ * Kept here, in the dealer's own tree, rather than in `vercel.json`: that file
+ * is platform-owned and rebuilt from the template on every engine sync, so a
+ * rule written into it survives until the next sync and then silently does not.
+ * The platform composes this file into `vercel.json` when it bakes.
+ *
+ * Absent is the normal case. A repo that has never renamed a page has no such
+ * file, and that is not worth a note.
+ */
+const redirectsPath = join(SITE, 'redirects.json');
+if (existsSync(redirectsPath)) {
+  const { value, error } = readJson(redirectsPath);
+  if (error) {
+    fail('site/redirects.json', '', `not valid JSON — ${error}`);
+  } else {
+    const list = Array.isArray(value) ? value : (value?.redirects ?? []);
+    if (!Array.isArray(list)) {
+      fail('site/redirects.json', '', 'must be an array of redirects (or { "redirects": [...] })');
+    } else {
+      const sources = new Set();
+      const livePaths = new Set(pages.map((p) => p.path));
+      for (const [i, rule] of list.entries()) {
+        const at = `[${i}]`;
+        for (const key of ['from', 'to']) {
+          if (!rule?.[key]) fail('site/redirects.json', `${at}.${key}`, 'is required');
+        }
+        if (rule?.from && !String(rule.from).startsWith('/')) {
+          fail('site/redirects.json', `${at}.from`, `"${rule.from}" must start with "/"`);
+        }
+        if (rule?.from) {
+          if (sources.has(rule.from)) {
+            fail('site/redirects.json', `${at}.from`, `"${rule.from}" appears twice`);
+          }
+          sources.add(rule.from);
+        }
+        // A redirect away from an address the site still builds is dead weight
+        // at best: the static file wins on some hosts and the rule wins on
+        // others, so which one a visitor gets stops being knowable.
+        if (rule?.from && livePaths.has(rule.from)) {
+          fail(
+            'site/redirects.json',
+            `${at}.from`,
+            `"${rule.from}" is also a page this site builds`,
+            'Redirect from an address nothing serves, or delete the page.',
+          );
+        }
+        if (rule?.from && rule.from === rule?.to) {
+          fail('site/redirects.json', `${at}.from`, `"${rule.from}" redirects to itself`);
+        }
+      }
+      // Two hops is a chain search engines follow grudgingly and some clients
+      // not at all. It happens naturally: rename a page twice and the first
+      // rule still points at the second name.
+      for (const rule of list) {
+        if (rule?.to && sources.has(rule.to)) {
+          note(
+            'site/redirects.json',
+            `"${rule.from}" redirects to "${rule.to}", which itself redirects. Point the first straight at the final address.`,
+          );
+        }
+      }
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 function collectBehaviours(nodes) {
@@ -484,6 +882,45 @@ function eachNode(nodes, visit, path = 'nodes') {
  * quietest one in the system: the renderer skips an unknown type with a warning,
  * so the page builds, deploys and simply has a hole where the section was.
  */
+/**
+ * Certified analytics events must never originate from `customHtml` or a coded
+ * widget.
+ *
+ * The block model's whole tagging guarantee rests on the renderer emitting
+ * `data-bz-el` / `data-bz-intent` structurally, so the AI cannot strip an
+ * attribute it never authors. `customHtml` and coded widgets are the two places
+ * an author writes markup directly, and markup written by hand carries whatever
+ * attributes the author remembered — which is how a certified site quietly stops
+ * reporting a CTA that somebody rebuilt as a hand-written link.
+ *
+ * They are not banned outright: both render, both are legitimate for markup no
+ * block expresses, and the build already warns that `customHtml` is not
+ * auto-tagged. What is refused is markup that *claims* to be a tagged element,
+ * because that claim is what makes the loss invisible — the element looks
+ * instrumented and reports nothing anybody maintains.
+ */
+function reportHandTaggedMarkup(file, nodes) {
+  // Every analytics attribute the renderer emits structurally. Widened rather
+  // than enumerated per provider: a hand-written `data-bz-` analytics attribute
+  // is the problem whatever its name, and a list that lags the renderer would
+  // pass exactly the ones nobody thought of.
+  const TAGGED = /\bdata-bz-(el|intent|cta|analytics|field-analytics|link-type|department|brochure|asset|vehicle)\s*=/;
+  eachNode(nodes, (node, path) => {
+    if (node?.type !== 'customHtml') return;
+    const html = node?.props?.html;
+    if (typeof html === 'string' && TAGGED.test(html)) {
+      fail(
+        file,
+        path,
+        'hand-writes an analytics attribute inside customHtml',
+        'Certified events come from real blocks, which emit these attributes structurally. ' +
+          'Hand-written ones survive until the next AI edit and then silently stop reporting — ' +
+          'use a buttons, menu, form or link block instead.',
+      );
+    }
+  });
+}
+
 function reportUnknownTypes(file, nodes) {
   eachNode(nodes, (node, at) => {
     if (!node.type) {
@@ -641,6 +1078,87 @@ function reportRepeatedShapes(file, nodes) {
   check(nodes, 'nodes');
 }
 
+/**
+ * A placement pointing a list prop at live dealer data.
+ *
+ * Every failure here renders as an empty band rather than an error, which is the
+ * worst way to find out: the page builds, publishes, and shows nothing where the
+ * locations were. So each one is caught at the only point the names can be
+ * cross-checked — the placement knows the source, the component knows which of
+ * its props are lists, and the catalogue knows which fields the source owns.
+ */
+function checkDataBindings(file, at, props) {
+  const declared = sectionProps.get(props.sectionId) ?? [];
+  const byKey = new Map(declared.map(p => [p.key, p]));
+
+  for (const [key, value] of Object.entries(props.values ?? {})) {
+    if (!isDataBinding(value)) continue;
+    const where = `${at}.props.values.${key}`;
+    const prop = byKey.get(key);
+
+    if (!prop) {
+      fail(file, where, `"${props.sectionId}" declares no prop called "${key}"`);
+      continue;
+    }
+    if (prop.type !== 'list') {
+      fail(file, where, `"${key}" is a ${prop.type} prop; only a list can come from a data source`);
+      continue;
+    }
+    const source = dataSource(value.source);
+    if (!source) {
+      const known = DATA_SOURCES.map(s => s.id).join(', ');
+      fail(file, `${where}.source`, `no data source called "${value.source}" — try one of: ${known}`);
+      continue;
+    }
+
+    // A field the tree binds to that the source does not carry renders as empty
+    // text forever, and reads on the canvas as "the data is not arriving".
+    const owned = new Set(source.fields.map(f => f.key));
+    const overlaid = new Set();
+    for (const [i, row] of (value.overlay ?? []).entries()) {
+      if (!row || typeof row !== 'object') {
+        fail(file, `${where}.overlay[${i}]`, 'must be an object');
+        continue;
+      }
+      if (row[source.match] == null || row[source.match] === '') {
+        fail(file, `${where}.overlay[${i}]`, `needs "${source.match}" to say which row it belongs to`);
+      }
+      for (const field of Object.keys(row)) {
+        if (field === source.match) continue;
+        if (owned.has(field)) {
+          fail(
+            file,
+            `${where}.overlay[${i}].${field}`,
+            `"${field}" comes from ${source.label} and would go stale if typed here — remove it`,
+          );
+          continue;
+        }
+        overlaid.add(field);
+      }
+    }
+
+    for (const field of prop.fields ?? []) {
+      if (owned.has(field.key) || overlaid.has(field.key)) continue;
+      note(file, `${where}: "${field.key}" is not in ${source.label} and no overlay row sets it — it renders empty`);
+    }
+
+    // `{"locationSlug": "{{locationSlug}}"}` is how a generated location page
+    // scopes a band to its own branch. Only a declared prop reaches the binding,
+    // so an undeclared one is dropped and the platform bakes no rows at all.
+    for (const [key, raw] of Object.entries(value.config ?? {})) {
+      const binding = typeof raw === 'string' ? raw.trim().match(/^\{\{\s*([\w.-]+)\s*\}\}$/) : null;
+      if (!binding) continue;
+      if (!byKey.has(binding[1])) {
+        fail(
+          file,
+          `${where}.config.${key}`,
+          `"${props.sectionId}" declares no prop called "${binding[1]}" — the binding cannot be filled in and the band bakes empty`,
+        );
+      }
+    }
+  }
+}
+
 /** Library ids a node points at, which no schema can check. */
 function checkReferences(file, nodes) {
   eachNode(nodes, (node, at) => {
@@ -651,6 +1169,7 @@ function checkReferences(file, nodes) {
     if (node.type === 'sharedSection' && props.sectionId && !sectionIds.has(props.sectionId)) {
       fail(file, `${at}.props.sectionId`, `no component called "${props.sectionId}"`);
     }
+    if (node.type === 'sharedSection') checkDataBindings(file, at, props);
     for (const [i, item] of (props.items ?? []).entries()) {
       if (item?.ctaId && !buttons.has(item.ctaId)) {
         fail(file, `${at}.props.items[${i}].ctaId`, `no button called "${item.ctaId}"`);

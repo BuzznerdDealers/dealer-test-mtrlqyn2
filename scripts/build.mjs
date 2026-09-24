@@ -15,6 +15,7 @@
 //
 // Run: node scripts/build.mjs  ->  dist/
 
+import { missingIdentity as missingAnalyticsIdentity } from '../renderer/analytics.mjs';
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +38,13 @@ import {
   splitAtContentArea,
   componentCode,
   documentStyles,
+  rooftopFrom,
+  isLocationPage,
+  locationIndex,
+  locationOut,
+  locationPageNodes,
+  locationPath,
+  fillTokens,
 } from '../renderer/index.mjs';
 
 const ROOT = process.cwd();
@@ -49,6 +57,14 @@ const readJsonIf = (p, fallback) => (existsSync(p) ? readJson(p) : fallback);
 const readText = (p, fallback = '') => (existsSync(p) ? readFileSync(p, 'utf8') : fallback);
 
 const config = readJson(join(ROOT, 'dealer.config.json'));
+
+/* The providers this dealer has enabled, baked by the platform at publish time.
+ *
+ * A dealer in no programme has no such file, and that is the normal state — not
+ * a misconfiguration to warn about. `platform/` is platform-owned and outside
+ * the builder's writable path set, so a dealer cannot edit or delete what a
+ * provider needs from the Design screen. */
+config.platformAnalytics = readJsonIf(join(ROOT, 'platform', 'analytics.json'), null);
 const tokens = readJson(join(SITE, 'tokens.json'));
 const menus = readJson(join(SITE, 'menus.json'));
 const pages = readJson(join(SITE, 'pages.json'));
@@ -189,6 +205,12 @@ const renderCtx = {
   // Menu items point at a page by slug rather than by address, so the manifest
   // has to be in context for a link to resolve.
   pages,
+  // The route pattern a `location` menu item resolves through — the manifest's
+  // own `/locations/:slug`, not the locations baked into the repo. A link's
+  // address does not depend on whether that location has been published here
+  // yet, and making it depend on that turned every unbaked item into a plain
+  // heading.
+  locationPagePath: locationPagePattern(pages),
   warn,
 };
 
@@ -338,6 +360,7 @@ const resetCss = readText(join(SITE, 'reset.css'));
 // widget.
 const blocksCss = readText(join(RENDERER, 'blocks.css')) + (customCss ? `\n${customCss}\n` : '');
 const widgetsJs = readText(join(RENDERER, 'client', 'widgets.js'));
+const analyticsJs = readText(join(RENDERER, 'client', 'analytics.js'));
 
 /* ------------------------------------------------------------------ writing */
 
@@ -347,6 +370,40 @@ function write(rel, contents) {
   writeFileSync(out, contents);
 }
 
+/* The placeholder guard.
+ *
+ * A site that tags with `REPLACE_CLIENT_ID` reports to nobody and looks exactly
+ * like a site that is tagged correctly — the tag fires, the network request goes
+ * out, and the omission is found during certification rather than before it. So
+ * a production build refuses while any enabled provider still has a placeholder
+ * in a setting it declared required, which is what turns an unanswered
+ * onboarding email from a blocker into data entry.
+ *
+ * Which settings those are is data: the platform copies each provider's
+ * `requiredForProduction` into `platform/analytics.json`, so this guard keeps
+ * working for a provider that did not exist when it was written.
+ *
+ * Preview and development builds go through: the whole point of modelling these
+ * as configuration is that everything else can be built and reviewed first. */
+const IS_PRODUCTION =
+  process.env.VERCEL_ENV === 'production' || process.env.BZ_DEPLOY_ENV === 'production';
+const missingIdentity = missingAnalyticsIdentity(config);
+if (IS_PRODUCTION && missingIdentity.length) {
+  console.error(
+    `\n  Analytics is enabled for this dealer but ${missingIdentity.join(', ')} ` +
+      `${missingIdentity.length === 1 ? 'is' : 'are'} still a placeholder.\n` +
+      '  A production site tagged with a REPLACE_ value reports to nobody and looks tagged.\n' +
+      "  Set the issued values on the dealer's Analytics providers screen, or turn the provider off.\n",
+  );
+  process.exit(1);
+}
+if (missingIdentity.length) {
+  console.warn(
+    `  warn: analytics identity is incomplete (${missingIdentity.join(', ')}). ` +
+      'This builds, but a production deployment will be refused.',
+  );
+}
+
 mkdirSync(DIST, { recursive: true });
 write('styles/tokens.css', tokensCss);
 write('styles/reset.css', resetCss);
@@ -354,6 +411,7 @@ write('styles/blocks.css', blocksCss);
 write('styles/chrome.css', chromeCss);
 write('scripts/chrome.js', chromeJs);
 write('scripts/widgets.js', widgetsJs);
+write('scripts/analytics.js', analyticsJs);
 
 /* -------------------------------------------------------------------- pages */
 // status: published -> emitted, indexed, in sitemap + llms.txt
@@ -395,6 +453,10 @@ const blogSettings = readJsonIf(join(BLOG, 'settings.json'), {
   title: 'News',
   description: '',
 });
+/* Every post and the index report the same page kind, so posts do not carry the
+ * field and there is nothing to get wrong across however many a dealer writes.
+ * Authorable, because a provider's vocabulary may call it something else. */
+const POST_PAGE_TYPE = blogSettings.pageType || 'Blog';
 const blogBase = String(blogSettings.basePath || '/blog').replace(/\/$/, '');
 const posts = [];
 if (blogSettings.enabled && existsSync(join(BLOG, 'posts'))) {
@@ -409,13 +471,61 @@ if (blogSettings.enabled && existsSync(join(BLOG, 'posts'))) {
 renderCtx.posts = posts;
 renderCtx.blogBasePath = blogBase;
 
+/** The route every generated location page is emitted at, e.g. `/locations/:slug`. */
+function locationPagePattern(entries) {
+  return entries.find(isLocationPage)?.path ?? null;
+}
+
+/**
+ * One `forEach: "locations"` entry becomes one entry per location.
+ *
+ * The locations come from the page document's own baked index, written by
+ * publish — never fetched here, because a dealer site builds with no network and
+ * no credentials. A page whose index is empty emits nothing and says so: that is
+ * a repo nobody has published yet, not a broken build.
+ */
+function expandLocationPages(entries) {
+  const out = [];
+  for (const p of entries) {
+    if (!isLocationPage(p)) {
+      out.push(p);
+      continue;
+    }
+    const document = readJsonIf(join(SITE, 'pages', p.dir, 'page.json'), {});
+    const locations = locationIndex(document);
+    if (!locations.length) {
+      warn(
+        `page "${p.slug}" builds one page per location, and no locations have been published yet — no location pages emitted`,
+      );
+      continue;
+    }
+    for (const location of locations) {
+      const path = locationPath(p.path, location.slug);
+      out.push({
+        ...p,
+        document,
+        location,
+        slug: `${p.slug}--${location.slug}`,
+        path,
+        out: locationOut(path),
+        locationSlug: location.slug,
+        title: fillTokens(p.title, location),
+        description: fillTokens(p.description, location),
+      });
+    }
+  }
+  return out;
+}
+
 const emitted = [];
-for (const p of pages) {
+for (const p of expandLocationPages(pages)) {
   const status = p.status || 'published';
   if (status === 'archived') continue;
 
   const dir = join(SITE, 'pages', p.dir);
-  const nodes = pageNodes(dir, p.slug);
+  const nodes = p.location
+    ? locationPageNodes(pageNodes(dir, p.slug), p.document, p.location.slug)
+    : pageNodes(dir, p.slug);
   const css = readText(join(dir, 'style.css'));
 
   let pageJs = null;
@@ -424,7 +534,12 @@ for (const p of pages) {
     write(`scripts/pages/${p.dir}.js`, readText(join(dir, 'script.js')));
   }
 
-  const target = { kind: 'page', slug: p.slug, group: p.group };
+  // `location` rather than `page` when this is one of many, so a template can
+  // dress every location page without naming each generated slug — which is the
+  // whole point, since those slugs do not exist until a location does.
+  const target = p.location
+    ? { kind: 'location', slug: p.slug, group: p.group, location: p.location.slug }
+    : { kind: 'page', slug: p.slug, group: p.group };
   const rendered = renderWithTemplate(target, nodes);
   const noindex = status !== 'published' || !!(p.seo && p.seo.noindex);
 
@@ -445,7 +560,10 @@ for (const p of pages) {
       pageJs: [...(rendered.scripts ?? []), ...(pageJs ? [pageJs] : [])],
       ogImage: p.seo && p.seo.ogImage,
       noindex,
+      keywords: (p.seo && p.seo.keywords) || [],
       tokenScopes: p.tokenScope ? [p.tokenScope] : [],
+      analyticsPage: { pageType: p.pageType || null },
+      rooftop: rooftopFrom(nodes, p.locationSlug),
     }),
   );
   emitted.push({ ...p, status, noindex, template: rendered.resolved.template?.id ?? null });
@@ -466,6 +584,10 @@ write('partials/chrome.css', chromeCss);
 write('partials/blocks.css', blocksCss);
 write('partials/chrome.js', chromeJs);
 write('partials/widgets.js', widgetsJs);
+// The storefront serves its own head, so it takes the loader from its root
+// route and only needs the runtime here — one script, two mount points, so the
+// brand site and /store/* share a session rather than measuring two visits.
+write('partials/analytics.js', analyticsJs);
 write('partials/reset.css', resetCss);
 write('partials/tokens.css', tokensCss);
 write('partials/fonts.txt', FONTS_HREF);
@@ -520,6 +642,8 @@ if (blogSettings.enabled && posts.length) {
           pageJs: [...(rendered.scripts ?? []), ...(postJs ? [postJs] : [])],
           ogImage: post.coverImage,
           noindex: false,
+          keywords: post.keywords || [],
+          analyticsPage: { pageType: POST_PAGE_TYPE },
         }),
       );
     }
@@ -537,6 +661,7 @@ if (blogSettings.enabled && posts.length) {
         title: settings.title,
         description: settings.description || config.seo.defaultDescription,
         canonical: config.url + base,
+        analyticsPage: { pageType: POST_PAGE_TYPE },
         bodyHtml: `<section class="bz-block"><div class="bz-container">
   <h1>${settings.title}</h1>
   <p class="bz-lede">${settings.description || ''}</p>
