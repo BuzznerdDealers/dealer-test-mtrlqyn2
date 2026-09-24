@@ -7,7 +7,15 @@
     "out": "index.html",
     "dir": "home",
     "status": "published",
-    "seo": { "ogImage": null, "noindex": false },
-    "templates": { "header": null, "footer": null, "utilityNav": null }
+    "seo": {
+      "ogImage": null,
+      "noindex": false
+    },
+    "templates": {
+      "header": null,
+      "footer": null,
+      "utilityNav": null
+    },
+    "pageType": "Home"
   }
 ]
